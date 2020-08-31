@@ -275,6 +275,19 @@ type BaseModuleContext interface {
 	// OtherModuleExists returns true if a module with the specified name exists, as determined by the NameInterface
 	// passed to Context.SetNameInterface, or SimpleNameInterface if it was not called.
 	OtherModuleExists(name string) bool
+
+	// OtherModuleDependencyVariantExists returns true if a module with the
+	// specified name and variant exists. The variant must match the given
+	// variations. It must also match all the non-local variations of the current
+	// module. In other words, it checks for the module AddVariationDependencies
+	// would add a dependency on with the same arguments.
+	OtherModuleDependencyVariantExists(variations []Variation, name string) bool
+
+	// OtherModuleReverseDependencyVariantExists returns true if a module with the
+	// specified name exists with the same variations as the current module. In
+	// other words, it checks for the module AddReverseDependency would add a
+	// dependency on with the same argument.
+	OtherModuleReverseDependencyVariantExists(name string) bool
 }
 
 type DynamicDependerModuleContext BottomUpMutatorContext
@@ -490,6 +503,24 @@ func (m *baseModuleContext) OtherModuleDependencyTag(logicModule Module) Depende
 func (m *baseModuleContext) OtherModuleExists(name string) bool {
 	_, exists := m.context.nameInterface.ModuleFromName(name, m.module.namespace())
 	return exists
+}
+
+func (m *baseModuleContext) OtherModuleDependencyVariantExists(variations []Variation, name string) bool {
+	possibleDeps := m.context.moduleGroupFromName(name, m.module.namespace())
+	if possibleDeps == nil {
+		return false
+	}
+	found, _ := m.context.findVariant(m.module, possibleDeps, variations, false, false)
+	return found != nil
+}
+
+func (m *baseModuleContext) OtherModuleReverseDependencyVariantExists(name string) bool {
+	possibleDeps := m.context.moduleGroupFromName(name, m.module.namespace())
+	if possibleDeps == nil {
+		return false
+	}
+	found, _ := m.context.findVariant(m.module, possibleDeps, nil, false, true)
+	return found != nil
 }
 
 func (m *baseModuleContext) GetDirectDep(name string) (Module, DependencyTag) {
@@ -812,6 +843,13 @@ type BottomUpMutatorContext interface {
 	// after the mutator pass is finished.
 	ReplaceDependencies(string)
 
+	// ReplaceDependencies replaces all dependencies on the identical variant of the module with the
+	// specified name with the current variant of this module as long as the supplied predicate returns
+	// true.
+	//
+	// Replacements don't take effect until after the mutator pass is finished.
+	ReplaceDependenciesIf(string, ReplaceDependencyPredicate)
+
 	// AliasVariation takes a variationName that was passed to CreateVariations for this module, and creates an
 	// alias from the current variant to the new variant.  The alias will be valid until the next time a mutator
 	// calls CreateVariations or CreateLocalVariations on this module without also calling AliasVariation.  The
@@ -975,6 +1013,12 @@ func (mctx *mutatorContext) AddInterVariantDependency(tag DependencyTag, from, t
 }
 
 func (mctx *mutatorContext) ReplaceDependencies(name string) {
+	mctx.ReplaceDependenciesIf(name, nil)
+}
+
+type ReplaceDependencyPredicate func(from Module, tag DependencyTag, to Module) bool
+
+func (mctx *mutatorContext) ReplaceDependenciesIf(name string, predicate ReplaceDependencyPredicate) {
 	target := mctx.context.moduleMatchingVariant(mctx.module, name)
 
 	if target == nil {
@@ -982,7 +1026,7 @@ func (mctx *mutatorContext) ReplaceDependencies(name string) {
 			mctx.module.variantName, name))
 	}
 
-	mctx.replace = append(mctx.replace, replace{target, mctx.module})
+	mctx.replace = append(mctx.replace, replace{target, mctx.module, predicate})
 }
 
 func (mctx *mutatorContext) Rename(name string) {
